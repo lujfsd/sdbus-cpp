@@ -1,8 +1,8 @@
 /**
  * (C) 2016 - 2017 KISTLER INSTRUMENTE AG, Winterthur, Switzerland
- * (C) 2016 - 2019 Stanislav Angelovic <angelovic.s@gmail.com>
+ * (C) 2016 - 2020 Stanislav Angelovic <angelovic.s@gmail.com>
  *
- * @file Connection_test.cpp
+ * @file DBusConnectionTests.cpp
  *
  * Created on: Jan 2, 2017
  * Project: sdbus-c++
@@ -25,7 +25,7 @@
  */
 
 // Own
-#include "defs.h"
+#include "Defs.h"
 
 // sdbus
 #include <sdbus-c++/Error.h>
@@ -39,7 +39,7 @@
 #include <thread>
 
 using ::testing::Eq;
-
+using namespace sdbus::test;
 
 /*-------------------------------------*/
 /* --          TEST CASES           -- */
@@ -47,7 +47,7 @@ using ::testing::Eq;
 
 TEST(Connection, CanBeDefaultConstructed)
 {
-    ASSERT_NO_THROW(sdbus::createConnection());
+    ASSERT_NO_THROW(auto con = sdbus::createConnection());
 }
 
 TEST(Connection, CanRequestRegisteredDbusName)
@@ -78,13 +78,13 @@ TEST(Connection, CannotReleaseNonrequestedName)
     ASSERT_THROW(connection->releaseName("some.random.nonrequested.name"), sdbus::Error);
 }
 
-TEST(Connection, CanEnterAndLeaveProcessingLoop)
+TEST(Connection, CanEnterAndLeaveEventLoop)
 {
     auto connection = sdbus::createConnection();
     connection->requestName(INTERFACE_NAME);
 
-    std::thread t([&](){ connection->enterProcessingLoop(); });
-    connection->leaveProcessingLoop();
+    std::thread t([&](){ connection->enterEventLoop(); });
+    connection->leaveEventLoop();
 
     t.join();
 

@@ -53,7 +53,7 @@ using namespace std::string_literals;
 #define FAHRENHEIT_THERMOMETER_OBJECT_PATH "/org/sdbuscpp/stresstests/fahrenheit/thermometer"s
 #define CONCATENATOR_OBJECT_PATH "/org/sdbuscpp/stresstests/concatenator"s
 
-class CelsiusThermometerAdaptor : public sdbus::AdaptorInterfaces<org::sdbuscpp::stresstests::celsius::thermometer_adaptor>
+class CelsiusThermometerAdaptor final : public sdbus::AdaptorInterfaces<org::sdbuscpp::stresstests::celsius::thermometer_adaptor>
 {
 public:
     CelsiusThermometerAdaptor(sdbus::IConnection& connection, std::string objectPath)
@@ -92,8 +92,8 @@ public:
     }
 };
 
-class FahrenheitThermometerAdaptor : public sdbus::AdaptorInterfaces< org::sdbuscpp::stresstests::fahrenheit::thermometer_adaptor
-                                                                    , org::sdbuscpp::stresstests::fahrenheit::thermometer::factory_adaptor >
+class FahrenheitThermometerAdaptor final : public sdbus::AdaptorInterfaces< org::sdbuscpp::stresstests::fahrenheit::thermometer_adaptor
+                                                                          , org::sdbuscpp::stresstests::fahrenheit::thermometer::factory_adaptor >
 {
 public:
     FahrenheitThermometerAdaptor(sdbus::IConnection& connection, std::string objectPath, bool isDelegate)
@@ -154,12 +154,12 @@ public:
 
     ~FahrenheitThermometerAdaptor()
     {
-        unregisterAdaptor();
-
         exit_ = true;
         cond_.notify_all();
         for (auto& worker : workers_)
             worker.join();
+
+        unregisterAdaptor();
     }
 
 protected:
@@ -222,7 +222,7 @@ public:
     }
 };
 
-class ConcatenatorAdaptor : public sdbus::AdaptorInterfaces<org::sdbuscpp::stresstests::concatenator_adaptor>
+class ConcatenatorAdaptor final : public sdbus::AdaptorInterfaces<org::sdbuscpp::stresstests::concatenator_adaptor>
 {
 public:
     ConcatenatorAdaptor(sdbus::IConnection& connection, std::string objectPath)
@@ -264,12 +264,12 @@ public:
 
     ~ConcatenatorAdaptor()
     {
-        unregisterAdaptor();
-
         exit_ = true;
         cond_.notify_all();
         for (auto& worker : workers_)
             worker.join();
+
+        unregisterAdaptor();
     }
 
 protected:
@@ -294,7 +294,7 @@ private:
     std::atomic<bool> exit_{};
 };
 
-class ConcatenatorProxy : public sdbus::ProxyInterfaces<org::sdbuscpp::stresstests::concatenator_proxy>
+class ConcatenatorProxy final : public sdbus::ProxyInterfaces<org::sdbuscpp::stresstests::concatenator_proxy>
 {
 public:
     ConcatenatorProxy(sdbus::IConnection& connection, std::string destination, std::string objectPath)
@@ -309,7 +309,7 @@ public:
     }
 
 private:
-    virtual void onConcatenateReply(const std::string& result, const sdbus::Error* error) override
+    virtual void onConcatenateReply(const std::string& result, [[maybe_unused]] const sdbus::Error* error) override
     {
         assert(error == nullptr);
 
@@ -392,7 +392,7 @@ int main(int argc, char *argv[])
         {
             CelsiusThermometerAdaptor thermometer(con, CELSIUS_THERMOMETER_OBJECT_PATH);
             service2ThreadReady = true;
-            con.enterProcessingLoop();
+            con.enterEventLoop();
         });
 
         auto service1Connection = sdbus::createSystemBusConnection(SERVICE_1_BUS_NAME);
@@ -402,7 +402,7 @@ int main(int argc, char *argv[])
             ConcatenatorAdaptor concatenator(con, CONCATENATOR_OBJECT_PATH);
             FahrenheitThermometerAdaptor thermometer(con, FAHRENHEIT_THERMOMETER_OBJECT_PATH, false);
             service1ThreadReady = true;
-            con.enterProcessingLoop();
+            con.enterEventLoop();
         });
 
         // Wait for both services to export their D-Bus objects
@@ -457,7 +457,7 @@ int main(int argc, char *argv[])
 
                 FahrenheitThermometerProxy thermometer(con, SERVICE_1_BUS_NAME, FAHRENHEIT_THERMOMETER_OBJECT_PATH);
                 uint32_t localCounter{};
-                uint32_t previousTemperature{};
+                [[maybe_unused]] uint32_t previousTemperature{};
 
                 while (!stopClients)
                 {
@@ -480,8 +480,8 @@ int main(int argc, char *argv[])
 
             // We could run the loop in a sync way, but we want it to run also when proxies are destroyed for better
             // coverage of multi-threaded scenarios, so we run it async and use condition variable for exit notification
-            //con.enterProcessingLoop();
-            con.enterProcessingLoopAsync();
+            //con.enterEventLoop();
+            con.enterEventLoopAsync();
 
             std::unique_lock<std::mutex> lock(clientThreadExitMutex);
             clientThreadExitCond.wait(lock, [&]{return clientThreadExit;});
@@ -493,17 +493,17 @@ int main(int argc, char *argv[])
 
         std::this_thread::sleep_for(std::chrono::milliseconds(loopDuration));
 
-        //clientConnection->leaveProcessingLoop();
+        //clientConnection->leaveEventLoop();
         std::unique_lock<std::mutex> lock(clientThreadExitMutex);
         clientThreadExit = true;
         lock.unlock();
         clientThreadExitCond.notify_one();
         clientThread.join();
 
-        service1Connection->leaveProcessingLoop();
+        service1Connection->leaveEventLoop();
         service1Thread.join();
 
-        service2Connection->leaveProcessingLoop();
+        service2Connection->leaveEventLoop();
         service2Thread.join();
     }
 

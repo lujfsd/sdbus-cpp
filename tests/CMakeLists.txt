@@ -1,36 +1,46 @@
 #-------------------------------
 # DOWNLOAD AND BUILD OF GOOGLETEST
-# https://github.com/google/googletest/blob/master/googletest/README.md#incorporating-into-an-existing-cmake-project
 #-------------------------------
 
-configure_file(googletest-download/CMakeLists.txt.in googletest-download/CMakeLists.txt)
+set(GOOGLETEST_VERSION 1.10.0 CACHE STRING "Version of gmock to use")
+set(GOOGLETEST_GIT_REPO "https://github.com/google/googletest.git" CACHE STRING "A git repo to clone and build googletest from if gmock is not found in the system")
 
-execute_process(COMMAND ${CMAKE_COMMAND} -G "${CMAKE_GENERATOR}" .
-    RESULT_VARIABLE result
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/googletest-download)
+find_package(GTest ${GOOGLETEST_VERSION} CONFIG)
+if (NOT TARGET GTest::gmock)
+    # Try pkg-config if GTest was not found through CMake config
+    find_package(PkgConfig)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(GMock IMPORTED_TARGET GLOBAL gmock>=${GOOGLETEST_VERSION})
+        if(TARGET PkgConfig::GMock)
+            add_library(GTest::gmock ALIAS PkgConfig::GMock)
+        endif()
+    endif()
+    # GTest was not found in the system, build it on our own
+    if (NOT TARGET GTest::gmock)
+        include(FetchContent)
 
-if(result)
-    message(FATAL_ERROR "CMake step for googletest failed: ${result}")
+        message("Fetching googletest...")
+        FetchContent_Declare(googletest
+                            GIT_REPOSITORY ${GOOGLETEST_GIT_REPO}
+                            GIT_TAG        release-${GOOGLETEST_VERSION}
+                            GIT_SHALLOW    1
+                            UPDATE_COMMAND "")
+
+        #FetchContent_MakeAvailable(googletest) # Not available in CMake 3.13 :-( Let's do it manually:
+        FetchContent_GetProperties(googletest)
+        if(NOT googletest_POPULATED)
+            FetchContent_Populate(googletest)
+            set(gtest_force_shared_crt ON CACHE INTERNAL "" FORCE)
+            set(BUILD_GMOCK ON CACHE INTERNAL "" FORCE)
+            set(INSTALL_GTEST OFF CACHE INTERNAL "" FORCE)
+            set(BUILD_SHARED_LIBS_BAK ${BUILD_SHARED_LIBS})
+            set(BUILD_SHARED_LIBS OFF)
+            add_subdirectory(${googletest_SOURCE_DIR} ${googletest_BINARY_DIR})
+            set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_BAK})
+            add_library(GTest::gmock ALIAS gmock)
+        endif()
+    endif()
 endif()
-
-execute_process(COMMAND ${CMAKE_COMMAND} --build .
-    RESULT_VARIABLE result
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/googletest-download)
-
-if(result)
-    message(FATAL_ERROR "Build step for googletest failed: ${result}")
-endif()
-
-set(gtest_force_shared_crt ON CACHE INTERNAL "" FORCE)
-set(BUILD_GMOCK ON CACHE INTERNAL "" FORCE)
-set(INSTALL_GTEST OFF CACHE INTERNAL "" FORCE)
-
-set(BUILD_SHARED_LIBS_BAK ${BUILD_SHARED_LIBS})
-set(BUILD_SHARED_LIBS OFF)
-add_subdirectory(${CMAKE_CURRENT_BINARY_DIR}/googletest-src
-                    ${CMAKE_CURRENT_BINARY_DIR}/googletest-build
-                    EXCLUDE_FROM_ALL)
-set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_BAK})
 
 #-------------------------------
 # SOURCE FILES CONFIGURATION
@@ -47,14 +57,23 @@ set(UNITTESTS_SRCS
 
 set(INTEGRATIONTESTS_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/integrationtests)
 set(INTEGRATIONTESTS_SRCS
-    ${INTEGRATIONTESTS_SOURCE_DIR}/AdaptorAndProxy_test.cpp
-    ${INTEGRATIONTESTS_SOURCE_DIR}/Connection_test.cpp
-    ${INTEGRATIONTESTS_SOURCE_DIR}/sdbus-c++-integration-tests.cpp
-    ${INTEGRATIONTESTS_SOURCE_DIR}/adaptor-glue.h
-    ${INTEGRATIONTESTS_SOURCE_DIR}/defs.h
-    ${INTEGRATIONTESTS_SOURCE_DIR}/proxy-glue.h
-    ${INTEGRATIONTESTS_SOURCE_DIR}/TestingAdaptor.h
-    ${INTEGRATIONTESTS_SOURCE_DIR}/TestingProxy.h)
+    ${INTEGRATIONTESTS_SOURCE_DIR}/DBusConnectionTests.cpp
+    ${INTEGRATIONTESTS_SOURCE_DIR}/DBusGeneralTests.cpp
+    ${INTEGRATIONTESTS_SOURCE_DIR}/DBusMethodsTests.cpp
+    ${INTEGRATIONTESTS_SOURCE_DIR}/DBusAsyncMethodsTests.cpp
+    ${INTEGRATIONTESTS_SOURCE_DIR}/DBusSignalsTests.cpp
+    ${INTEGRATIONTESTS_SOURCE_DIR}/DBusPropertiesTests.cpp
+    ${INTEGRATIONTESTS_SOURCE_DIR}/DBusStandardInterfacesTests.cpp
+    ${INTEGRATIONTESTS_SOURCE_DIR}/Defs.h
+    ${INTEGRATIONTESTS_SOURCE_DIR}/integrationtests-adaptor.h
+    ${INTEGRATIONTESTS_SOURCE_DIR}/integrationtests-proxy.h
+    ${INTEGRATIONTESTS_SOURCE_DIR}/TestFixture.h
+    ${INTEGRATIONTESTS_SOURCE_DIR}/TestFixture.cpp
+    ${INTEGRATIONTESTS_SOURCE_DIR}/TestAdaptor.h
+    ${INTEGRATIONTESTS_SOURCE_DIR}/TestAdaptor.cpp
+    ${INTEGRATIONTESTS_SOURCE_DIR}/TestProxy.h
+    ${INTEGRATIONTESTS_SOURCE_DIR}/TestProxy.cpp
+    ${INTEGRATIONTESTS_SOURCE_DIR}/sdbus-c++-integration-tests.cpp)
 
 set(PERFTESTS_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/perftests)
 set(STRESSTESTS_CLIENT_SRCS
@@ -84,16 +103,13 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 # BUILD INFORMATION
 #----------------------------------
 
-add_executable(sdbus-c++-unit-tests ${UNITTESTS_SRCS} $<TARGET_OBJECTS:sdbus-c++-objlib>)
-target_compile_definitions(sdbus-c++-unit-tests PRIVATE LIBSYSTEMD_VERSION=${SYSTEMD_VERSION})
-target_include_directories(sdbus-c++-unit-tests PRIVATE ${SYSTEMD_INCLUDE_DIRS}
-                                                        ${CMAKE_SOURCE_DIR}/src
-                                                        ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(sdbus-c++-unit-tests ${SYSTEMD_LIBRARIES} gmock gmock_main)
+add_executable(sdbus-c++-unit-tests ${UNITTESTS_SRCS})
+target_compile_definitions(sdbus-c++-unit-tests PRIVATE LIBSYSTEMD_VERSION=${LIBSYSTEMD_VERSION})
+target_link_libraries(sdbus-c++-unit-tests sdbus-c++-objlib GTest::gmock)
 
 add_executable(sdbus-c++-integration-tests ${INTEGRATIONTESTS_SRCS})
-target_compile_definitions(sdbus-c++-integration-tests PRIVATE LIBSYSTEMD_VERSION=${SYSTEMD_VERSION})
-target_link_libraries(sdbus-c++-integration-tests sdbus-c++ gmock gmock_main)
+target_compile_definitions(sdbus-c++-integration-tests PRIVATE LIBSYSTEMD_VERSION=${LIBSYSTEMD_VERSION})
+target_link_libraries(sdbus-c++-integration-tests sdbus-c++ GTest::gmock)
 
 # Manual performance and stress tests
 option(ENABLE_PERF_TESTS "Build and install manual performance tests (default OFF)" OFF)
@@ -104,6 +120,7 @@ if(ENABLE_PERF_TESTS OR ENABLE_STRESS_TESTS)
     find_package(Threads REQUIRED)
 
     if(ENABLE_PERF_TESTS)
+        message(STATUS "Building with performance tests")
         add_executable(sdbus-c++-perf-tests-client ${STRESSTESTS_CLIENT_SRCS})
         target_link_libraries(sdbus-c++-perf-tests-client sdbus-c++ Threads::Threads)
         add_executable(sdbus-c++-perf-tests-server ${STRESSTESTS_SERVER_SRCS})
@@ -111,6 +128,7 @@ if(ENABLE_PERF_TESTS OR ENABLE_STRESS_TESTS)
     endif()
 
     if(ENABLE_STRESS_TESTS)
+        message(STATUS "Building with stress tests")
         add_executable(sdbus-c++-stress-tests ${STRESSTESTS_SRCS})
         target_link_libraries(sdbus-c++-stress-tests sdbus-c++ Threads::Threads)
     endif()

@@ -164,6 +164,7 @@ std::tuple<std::string, std::string> AdaptorGenerator::processMethods(const Node
     for (const auto& method : methods)
     {
         auto methodName = method->get("name");
+        auto methodNameSafe = mangle_name(methodName);
 
         auto annotations = getAnnotations(*method);
         bool async{false};
@@ -204,19 +205,22 @@ std::tuple<std::string, std::string> AdaptorGenerator::processMethods(const Node
         Nodes inArgs = args.select("direction" , "in");
         Nodes outArgs = args.select("direction" , "out");
 
-        std::string argStr, argTypeStr;
-        std::tie(argStr, argTypeStr, std::ignore) = argsToNamesAndTypes(inArgs, async);
+        std::string argStr, argTypeStr, argStringsStr, outArgStringsStr;
+        std::tie(argStr, argTypeStr, std::ignore, argStringsStr) = argsToNamesAndTypes(inArgs, async);
+        std::tie(std::ignore, std::ignore, std::ignore, outArgStringsStr) = argsToNamesAndTypes(outArgs);
 
         using namespace std::string_literals;
 
         registrationSS << tab << tab << "object_.registerMethod(\""
                 << methodName << "\")"
                 << ".onInterface(INTERFACE_NAME)"
+                << (!argStringsStr.empty() ? (".withInputParamNames(" + argStringsStr + ")") : "")
+                << (!outArgStringsStr.empty() ? (".withOutputParamNames(" + outArgStringsStr + ")") : "")
                 << ".implementedAs("
                 << "[this]("
                 << (async ? "sdbus::Result<" + outArgsToType(outArgs, true) + ">&& result" + (argTypeStr.empty() ? "" : ", ") : "")
                 << argTypeStr
-                << "){ " << (async ? "" : "return ") << "this->" << methodName << "("
+                << "){ " << (async ? "" : "return ") << "this->" << methodNameSafe << "("
                 << (async ? "std::move(result)"s + (argTypeStr.empty() ? "" : ", ") : "")
                 << argStr << "); })"
                 << annotationRegistration << ";" << endl;
@@ -224,7 +228,7 @@ std::tuple<std::string, std::string> AdaptorGenerator::processMethods(const Node
         declarationSS << tab
                 << "virtual "
                 << (async ? "void" : outArgsToType(outArgs))
-                << " " << methodName
+                << " " << methodNameSafe
                 << "("
                 << (async ? "sdbus::Result<" + outArgsToType(outArgs, true) + ">&& result" + (argTypeStr.empty() ? "" : ", ") : "")
                 << argTypeStr
@@ -259,8 +263,8 @@ std::tuple<std::string, std::string> AdaptorGenerator::processSignals(const Node
 
         Nodes args = (*signal)["arg"];
 
-        std::string argStr, argTypeStr, typeStr;;
-        std::tie(argStr, argTypeStr, typeStr) = argsToNamesAndTypes(args);
+        std::string argStr, argTypeStr, typeStr, argStringsStr;
+        std::tie(argStr, argTypeStr, typeStr, argStringsStr) = argsToNamesAndTypes(args);
 
         signalRegistrationSS << tab << tab
                 << "object_.registerSignal(\"" << name << "\")"
@@ -268,7 +272,7 @@ std::tuple<std::string, std::string> AdaptorGenerator::processSignals(const Node
 
         if (args.size() > 0)
         {
-            signalRegistrationSS << ".withParameters<" << typeStr << ">()";
+            signalRegistrationSS << ".withParameters<" << typeStr << ">(" << argStringsStr << ")";
         }
 
         signalRegistrationSS << annotationRegistration;
@@ -276,6 +280,7 @@ std::tuple<std::string, std::string> AdaptorGenerator::processSignals(const Node
 
         auto nameWithCapFirstLetter = name;
         nameWithCapFirstLetter[0] = std::toupper(nameWithCapFirstLetter[0]);
+        nameWithCapFirstLetter = mangle_name(nameWithCapFirstLetter);
 
         signalMethodSS << tab << "void emit" << nameWithCapFirstLetter << "(" << argTypeStr << ")" << endl
                 << tab << "{" << endl
@@ -302,6 +307,7 @@ std::tuple<std::string, std::string> AdaptorGenerator::processProperties(const N
     for (const auto& property : properties)
     {
         auto propertyName = property->get("name");
+        auto propertyNameSafe = mangle_name(propertyName);
         auto propertyAccess = property->get("access");
         auto propertySignature = property->get("type");
 
@@ -333,23 +339,23 @@ std::tuple<std::string, std::string> AdaptorGenerator::processProperties(const N
 
         if (propertyAccess == "read" || propertyAccess == "readwrite")
         {
-            registrationSS << ".withGetter([this](){ return this->" << propertyName << "(); })";
+            registrationSS << ".withGetter([this](){ return this->" << propertyNameSafe << "(); })";
         }
 
         if (propertyAccess == "readwrite" || propertyAccess == "write")
         {
             registrationSS
                 << ".withSetter([this](" << propertyTypeArg << ")"
-                   "{ this->" << propertyName << "(" << propertyArg << "); })";
+                   "{ this->" << propertyNameSafe << "(" << propertyArg << "); })";
         }
 
         registrationSS << annotationRegistration;
         registrationSS << ";" << endl;
 
         if (propertyAccess == "read" || propertyAccess == "readwrite")
-            declarationSS << tab << "virtual " << propertyType << " " << propertyName << "() = 0;" << endl;
+            declarationSS << tab << "virtual " << propertyType << " " << propertyNameSafe << "() = 0;" << endl;
         if (propertyAccess == "readwrite" || propertyAccess == "write")
-            declarationSS << tab << "virtual void " << propertyName << "(" << propertyTypeArg << ") = 0;" << endl;
+            declarationSS << tab << "virtual void " << propertyNameSafe << "(" << propertyTypeArg << ") = 0;" << endl;
     }
 
     return std::make_tuple(registrationSS.str(), declarationSS.str());

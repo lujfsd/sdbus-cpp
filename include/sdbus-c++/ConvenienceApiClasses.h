@@ -31,6 +31,7 @@
 #include <sdbus-c++/TypeTraits.h>
 #include <sdbus-c++/Flags.h>
 #include <string>
+#include <vector>
 #include <type_traits>
 #include <chrono>
 #include <cstdint>
@@ -41,6 +42,7 @@ namespace sdbus {
     class IProxy;
     class Variant;
     class Error;
+    class PendingAsyncCall;
 }
 
 namespace sdbus {
@@ -50,14 +52,14 @@ namespace sdbus {
     public:
         MethodRegistrator(IObject& object, const std::string& methodName);
         MethodRegistrator(MethodRegistrator&& other) = default;
-        MethodRegistrator& operator=(MethodRegistrator&& other) = default;
         ~MethodRegistrator() noexcept(false);
 
         MethodRegistrator& onInterface(std::string interfaceName);
-        template <typename _Function>
-        std::enable_if_t<!is_async_method_v<_Function>, MethodRegistrator&> implementedAs(_Function&& callback);
-        template <typename _Function>
-        std::enable_if_t<is_async_method_v<_Function>, MethodRegistrator&> implementedAs(_Function&& callback);
+        template <typename _Function> MethodRegistrator& implementedAs(_Function&& callback);
+        MethodRegistrator& withInputParamNames(std::vector<std::string> paramNames);
+        template <typename... _String> MethodRegistrator& withInputParamNames(_String... paramNames);
+        MethodRegistrator& withOutputParamNames(std::vector<std::string> paramNames);
+        template <typename... _String> MethodRegistrator& withOutputParamNames(_String... paramNames);
         MethodRegistrator& markAsDeprecated();
         MethodRegistrator& markAsPrivileged();
         MethodRegistrator& withNoReply();
@@ -67,7 +69,9 @@ namespace sdbus {
         const std::string& methodName_;
         std::string interfaceName_;
         std::string inputSignature_;
+        std::vector<std::string> inputParamNames_;
         std::string outputSignature_;
+        std::vector<std::string> outputParamNames_;
         method_callback methodCallback_;
         Flags flags_;
         int exceptions_{}; // Number of active exceptions when SignalRegistrator is constructed
@@ -78,11 +82,12 @@ namespace sdbus {
     public:
         SignalRegistrator(IObject& object, const std::string& signalName);
         SignalRegistrator(SignalRegistrator&& other) = default;
-        SignalRegistrator& operator=(SignalRegistrator&& other) = default;
         ~SignalRegistrator() noexcept(false);
 
         SignalRegistrator& onInterface(std::string interfaceName);
         template <typename... _Args> SignalRegistrator& withParameters();
+        template <typename... _Args> SignalRegistrator& withParameters(std::vector<std::string> paramNames);
+        template <typename... _Args, typename... _String> SignalRegistrator& withParameters(_String... paramNames);
         SignalRegistrator& markAsDeprecated();
 
     private:
@@ -90,6 +95,7 @@ namespace sdbus {
         const std::string& signalName_;
         std::string interfaceName_;
         std::string signalSignature_;
+        std::vector<std::string> paramNames_;
         Flags flags_;
         int exceptions_{}; // Number of active exceptions when SignalRegistrator is constructed
     };
@@ -99,7 +105,6 @@ namespace sdbus {
     public:
         PropertyRegistrator(IObject& object, const std::string& propertyName);
         PropertyRegistrator(PropertyRegistrator&& other) = default;
-        PropertyRegistrator& operator=(PropertyRegistrator&& other) = default;
         ~PropertyRegistrator() noexcept(false);
 
         PropertyRegistrator& onInterface(std::string interfaceName);
@@ -125,7 +130,6 @@ namespace sdbus {
     public:
         InterfaceFlagsSetter(IObject& object, const std::string& interfaceName);
         InterfaceFlagsSetter(InterfaceFlagsSetter&& other) = default;
-        InterfaceFlagsSetter& operator=(InterfaceFlagsSetter&& other) = default;
         ~InterfaceFlagsSetter() noexcept(false);
 
         InterfaceFlagsSetter& markAsDeprecated();
@@ -145,7 +149,6 @@ namespace sdbus {
     public:
         SignalEmitter(IObject& object, const std::string& signalName);
         SignalEmitter(SignalEmitter&& other) = default;
-        SignalEmitter& operator=(SignalEmitter&& other) = default;
         ~SignalEmitter() noexcept(false);
         SignalEmitter& onInterface(const std::string& interfaceName);
         template <typename... _Args> void withArguments(_Args&&... args);
@@ -162,7 +165,6 @@ namespace sdbus {
     public:
         MethodInvoker(IProxy& proxy, const std::string& methodName);
         MethodInvoker(MethodInvoker&& other) = default;
-        MethodInvoker& operator=(MethodInvoker&& other) = default;
         ~MethodInvoker() noexcept(false);
 
         MethodInvoker& onInterface(const std::string& interfaceName);
@@ -192,13 +194,13 @@ namespace sdbus {
         template <typename _Rep, typename _Period>
         AsyncMethodInvoker& withTimeout(const std::chrono::duration<_Rep, _Period>& timeout);
         template <typename... _Args> AsyncMethodInvoker& withArguments(_Args&&... args);
-        template <typename _Function> void uponReplyInvoke(_Function&& callback);
+        template <typename _Function> PendingAsyncCall uponReplyInvoke(_Function&& callback);
 
     private:
         IProxy& proxy_;
         const std::string& methodName_;
         uint64_t timeout_{};
-        AsyncMethodCall method_;
+        MethodCall method_;
     };
 
     class SignalSubscriber

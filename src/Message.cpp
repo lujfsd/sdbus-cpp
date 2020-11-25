@@ -28,7 +28,8 @@
 #include <sdbus-c++/Types.h>
 #include <sdbus-c++/Error.h>
 #include "MessageUtils.h"
-#include "SdBus.h"
+#include "ISdBus.h"
+#include "IConnection.h"
 #include "ScopeGuard.h"
 #include <systemd/sd-bus.h>
 #include <cassert>
@@ -660,6 +661,22 @@ MethodReply MethodCall::sendWithNoReply() const
     return Factory::create<MethodReply>(); // No reply
 }
 
+void MethodCall::send(void* callback, void* userData, uint64_t timeout, dont_request_slot_t) const
+{
+    auto r = sdbus_->sd_bus_call_async(nullptr, nullptr, (sd_bus_message*)msg_, (sd_bus_message_handler_t)callback, userData, timeout);
+    SDBUS_THROW_ERROR_IF(r < 0, "Failed to call method", -r);
+}
+
+MethodCall::Slot MethodCall::send(void* callback, void* userData, uint64_t timeout) const
+{
+    sd_bus_slot* slot;
+
+    auto r = sdbus_->sd_bus_call_async(nullptr, &slot, (sd_bus_message*)msg_, (sd_bus_message_handler_t)callback, userData, timeout);
+    SDBUS_THROW_ERROR_IF(r < 0, "Failed to call method asynchronously", -r);
+
+    return Slot{slot, [sdbus_ = sdbus_](void *slot){ sdbus_->sd_bus_slot_unref((sd_bus_slot*)slot); }};
+}
+
 MethodReply MethodCall::createReply() const
 {
     sd_bus_message* sdbusReply{};
@@ -682,21 +699,6 @@ MethodReply MethodCall::createErrorReply(const Error& error) const
     return Factory::create<MethodReply>(sdbusErrorReply, sdbus_, adopt_message);
 }
 
-AsyncMethodCall::AsyncMethodCall(MethodCall&& call) noexcept
-    : Message(std::move(call))
-{
-}
-
-AsyncMethodCall::Slot AsyncMethodCall::send(void* callback, void* userData, uint64_t timeout) const
-{
-    sd_bus_slot* slot;
-
-    auto r = sdbus_->sd_bus_call_async(nullptr, &slot, (sd_bus_message*)msg_, (sd_bus_message_handler_t)callback, userData, timeout);
-    SDBUS_THROW_ERROR_IF(r < 0, "Failed to call method asynchronously", -r);
-
-    return Slot{slot, [sdbus_ = sdbus_](void *slot){ sdbus_->sd_bus_slot_unref((sd_bus_slot*)slot); }};
-}
-
 void MethodReply::send() const
 {
     auto r = sdbus_->sd_bus_send(nullptr, (sd_bus_message*)msg_, nullptr);
@@ -711,42 +713,8 @@ void Signal::send() const
 
 PlainMessage createPlainMessage()
 {
-    int r;
-
-    // All references to the bus (like created messages) must not outlive this thread (because messages refer to sdbus
-    // which is thread-local, and because BusReferenceKeeper below destroys the bus at thread exit).
-    // A more flexible solution would be that the caller would already provide an ISdBus reference as a parameter.
-    // Variant is one of the callers. This means Variant could no more be created in a stand-alone way, but
-    // through a factory of some existing facility (Object, Proxy, Connection...).
-    // TODO: Consider this alternative of creating Variant, it may live next to the current one. This function would
-    // get IConnection* parameter and IConnection would provide createPlainMessage factory (just like it already
-    // provides e.g. createMethodCall). If this parameter were null, the current mechanism would be used.
-
-    thread_local internal::SdBus sdbus;
-
-    sd_bus* bus{};
-    SCOPE_EXIT{ sd_bus_unref(bus); };
-    r = sd_bus_default_system(&bus);
-    SDBUS_THROW_ERROR_IF(r < 0, "Failed to get default system bus", -r);
-
-    thread_local struct BusReferenceKeeper
-    {
-        explicit BusReferenceKeeper(sd_bus* bus) : bus_(sd_bus_ref(bus)) { sd_bus_flush(bus_); }
-        ~BusReferenceKeeper() { sd_bus_flush_close_unref(bus_); }
-        sd_bus* bus_{};
-    } busReferenceKeeper{bus};
-
-    // Shelved here as handy thing for potential future tracing purposes:
-    //#include <unistd.h>
-    //#include <sys/syscall.h>
-    //#define gettid() syscall(SYS_gettid)
-    //printf("createPlainMessage: sd_bus*=[%p], n_ref=[%d], TID=[%d]\n", bus, *(unsigned*)bus, gettid());
-
-    sd_bus_message* sdbusMsg{};
-    r = sd_bus_message_new(bus, &sdbusMsg, _SD_BUS_MESSAGE_TYPE_INVALID);
-    SDBUS_THROW_ERROR_IF(r < 0, "Failed to create a new message", -r);
-
-    return Message::Factory::create<PlainMessage>(sdbusMsg, &sdbus, adopt_message);
+    static auto connection = internal::createConnection();
+    return connection->createPlainMessage();
 }
 
 }

@@ -35,7 +35,7 @@
 #include <poll.h>
 #include <sys/eventfd.h>
 
-namespace sdbus { namespace internal {
+namespace sdbus::internal {
 
 Connection::Connection(std::unique_ptr<ISdBus>&& interface, const BusFactory& busFactory)
     : iface_(std::move(interface))
@@ -61,7 +61,7 @@ Connection::Connection(std::unique_ptr<ISdBus>&& interface, remote_system_bus_t,
 
 Connection::~Connection()
 {
-    leaveProcessingLoop();
+    Connection::leaveEventLoop();
 }
 
 void Connection::requestName(const std::string& name)
@@ -84,8 +84,12 @@ std::string Connection::getUniqueName() const
     return unique;
 }
 
-void Connection::enterProcessingLoop()
+void Connection::enterEventLoop()
 {
+    loopThreadId_ = std::this_thread::get_id();
+
+    std::lock_guard guard(loopMutex_);
+
     while (true)
     {
         auto processed = processPendingRequest();
@@ -94,23 +98,25 @@ void Connection::enterProcessingLoop()
 
         auto success = waitForNextRequest();
         if (!success)
-            break; // Exit processing loop
+            break; // Exit I/O event loop
     }
+
+    loopThreadId_ = std::thread::id{};
 }
 
-void Connection::enterProcessingLoopAsync()
+void Connection::enterEventLoopAsync()
 {
     if (!asyncLoopThread_.joinable())
-        asyncLoopThread_ = std::thread([this](){ enterProcessingLoop(); });
+        asyncLoopThread_ = std::thread([this](){ enterEventLoop(); });
 }
 
-void Connection::leaveProcessingLoop()
+void Connection::leaveEventLoop()
 {
-    notifyProcessingLoopToExit();
-    joinWithProcessingLoop();
+    notifyEventLoopToExit();
+    joinWithEventLoop();
 }
 
-sdbus::IConnection::PollData Connection::getProcessLoopPollData() const
+Connection::PollData Connection::getEventLoopPollData() const
 {
     ISdBus::PollData pollData;
     auto r = iface_->sd_bus_get_poll_data(bus_.get(), &pollData);
@@ -184,6 +190,17 @@ SlotPtr Connection::addObjectVTable( const std::string& objectPath
     return {slot, [this](void *slot){ iface_->sd_bus_slot_unref((sd_bus_slot*)slot); }};
 }
 
+PlainMessage Connection::createPlainMessage() const
+{
+    sd_bus_message* sdbusMsg{};
+
+    auto r = iface_->sd_bus_message_new(bus_.get(), &sdbusMsg, _SD_BUS_MESSAGE_TYPE_INVALID);
+
+    SDBUS_THROW_ERROR_IF(r < 0, "Failed to create a plain message", -r);
+
+    return Message::Factory::create<PlainMessage>(sdbusMsg, iface_.get(), adopt_message);
+}
+
 MethodCall Connection::createMethodCall( const std::string& destination
                                        , const std::string& objectPath
                                        , const std::string& interfaceName
@@ -207,17 +224,17 @@ Signal Connection::createSignal( const std::string& objectPath
                                , const std::string& interfaceName
                                , const std::string& signalName ) const
 {
-    sd_bus_message *sdbusSignal{};
+    sd_bus_message *sdbusMsg{};
 
     auto r = iface_->sd_bus_message_new_signal( bus_.get()
-                                              , &sdbusSignal
+                                              , &sdbusMsg
                                               , objectPath.c_str()
                                               , interfaceName.c_str()
                                               , signalName.c_str() );
 
     SDBUS_THROW_ERROR_IF(r < 0, "Failed to create signal", -r);
 
-    return Message::Factory::create<Signal>(sdbusSignal, iface_.get(), adopt_message);
+    return Message::Factory::create<Signal>(sdbusMsg, iface_.get(), adopt_message);
 }
 
 void Connection::emitPropertiesChangedSignal( const std::string& objectPath
@@ -288,6 +305,35 @@ SlotPtr Connection::registerSignalHandler( const std::string& objectPath
     return {slot, [this](void *slot){ iface_->sd_bus_slot_unref((sd_bus_slot*)slot); }};
 }
 
+MethodReply Connection::tryCallMethodSynchronously(const MethodCall& message, uint64_t timeout)
+{
+    auto loopThreadId = loopThreadId_.load(std::memory_order_relaxed);
+
+    // Is the loop not yet on? => Go make synchronous call
+    while (loopThreadId == std::thread::id{})
+    {
+        // Did the loop begin in the meantime? Or try_lock() failed spuriously?
+        if (!loopMutex_.try_lock())
+        {
+            loopThreadId = loopThreadId_.load(std::memory_order_relaxed);
+            continue;
+        }
+
+        // Synchronous D-Bus call
+        std::lock_guard guard(loopMutex_, std::adopt_lock);
+        return message.send(timeout);
+    }
+
+    // Is the loop on and we are in the same thread? => Go for synchronous call
+    if (loopThreadId == std::this_thread::get_id())
+    {
+        assert(!loopMutex_.try_lock());
+        return message.send(timeout);
+    }
+
+    return {};
+}
+
 Connection::BusPtr Connection::openBus(const BusFactory& busFactory)
 {
     sd_bus* bus{};
@@ -312,13 +358,13 @@ void Connection::finishHandshake(sd_bus* bus)
     SDBUS_THROW_ERROR_IF(r < 0, "Failed to flush bus on opening", -r);
 }
 
-void Connection::notifyProcessingLoopToExit()
+void Connection::notifyEventLoopToExit()
 {
     assert(loopExitFd_.fd >= 0);
 
     uint64_t value = 1;
     auto r = write(loopExitFd_.fd, &value, sizeof(value));
-    SDBUS_THROW_ERROR_IF(r < 0, "Failed to notify processing loop", -errno);
+    SDBUS_THROW_ERROR_IF(r < 0, "Failed to notify event loop", -errno);
 }
 
 void Connection::clearExitNotification()
@@ -328,7 +374,7 @@ void Connection::clearExitNotification()
     SDBUS_THROW_ERROR_IF(r < 0, "Failed to read from the event descriptor", -errno);
 }
 
-void Connection::joinWithProcessingLoop()
+void Connection::joinWithEventLoop()
 {
     if (asyncLoopThread_.joinable())
         asyncLoopThread_.join();
@@ -347,12 +393,10 @@ bool Connection::processPendingRequest()
 
 bool Connection::waitForNextRequest()
 {
-    auto bus = bus_.get();
-
-    assert(bus != nullptr);
+    assert(bus_ != nullptr);
     assert(loopExitFd_.fd != 0);
 
-    auto sdbusPollData = getProcessLoopPollData();
+    auto sdbusPollData = getEventLoopPollData();
     struct pollfd fds[] = {{sdbusPollData.fd, sdbusPollData.events, 0}, {loopExitFd_.fd, POLLIN, 0}};
     auto fdsCount = sizeof(fds)/sizeof(fds[0]);
 
@@ -408,7 +452,19 @@ Connection::LoopExitEventFd::~LoopExitEventFd()
     close(fd);
 }
 
-}}
+}
+
+namespace sdbus::internal {
+
+std::unique_ptr<sdbus::internal::IConnection> createConnection()
+{
+    auto connection = sdbus::createConnection();
+    SCOPE_EXIT{ connection.release(); };
+    auto connectionInternal = dynamic_cast<sdbus::internal::IConnection*>(connection.get());
+    return std::unique_ptr<sdbus::internal::IConnection>(connectionInternal);
+}
+
+}
 
 namespace sdbus {
 

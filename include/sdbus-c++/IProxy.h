@@ -36,9 +36,12 @@
 // Forward declarations
 namespace sdbus {
     class MethodCall;
-    class AsyncMethodCall;
     class MethodReply;
     class IConnection;
+    class PendingAsyncCall;
+    namespace internal {
+        class Proxy;
+    }
 }
 
 namespace sdbus {
@@ -78,21 +81,6 @@ namespace sdbus {
         virtual MethodCall createMethodCall(const std::string& interfaceName, const std::string& methodName) = 0;
 
         /*!
-         * @brief Creates an asynchronous method call message
-         *
-         * @param[in] interfaceName Name of an interface that provides a given method
-         * @param[in] methodName Name of the method
-         * @return A method call message
-         *
-         * Serialize method arguments into the returned message and invoke the method by passing
-         * the message with serialized arguments to the @c callMethod function.
-         * Alternatively, use higher-level API @c callMethodAsync(const std::string& methodName) defined below.
-         *
-         * @throws sdbus::Error in case of failure
-         */
-        virtual AsyncMethodCall createAsyncMethodCall(const std::string& interfaceName, const std::string& methodName) = 0;
-
-        /*!
          * @brief Calls method on the proxied D-Bus object
          *
          * @param[in] message Message representing a method call
@@ -124,22 +112,23 @@ namespace sdbus {
          * @param[in] message Message representing an async method call
          * @param[in] asyncReplyCallback Handler for the async reply
          * @param[in] timeout Timeout for dbus call in microseconds
+         * @return Cookie for the the pending asynchronous call
          *
          * The call is non-blocking. It doesn't wait for the reply. Once the reply arrives,
          * the provided async reply handler will get invoked from the context of the connection
-         * event loop processing thread.
+         * I/O event loop thread.
          *
          * Note: To avoid messing with messages, use higher-level API defined below.
          *
          * @throws sdbus::Error in case of failure
          */
-        virtual void callMethod(const AsyncMethodCall& message, async_reply_handler asyncReplyCallback, uint64_t timeout = 0) = 0;
+        virtual PendingAsyncCall callMethod(const MethodCall& message, async_reply_handler asyncReplyCallback, uint64_t timeout = 0) = 0;
 
         /*!
-         * @copydoc IProxy::callMethod(const AsyncMethodCall&,async_reply_handler,uint64_t)
+         * @copydoc IProxy::callMethod(const MethodCall&,async_reply_handler,uint64_t)
          */
         template <typename _Rep, typename _Period>
-        void callMethod(const AsyncMethodCall& message, async_reply_handler asyncReplyCallback, const std::chrono::duration<_Rep, _Period>& timeout);
+        PendingAsyncCall callMethod(const MethodCall& message, async_reply_handler asyncReplyCallback, const std::chrono::duration<_Rep, _Period>& timeout);
 
         /*!
          * @brief Registers a handler for the desired signal emitted by the proxied D-Bus object
@@ -194,7 +183,7 @@ namespace sdbus {
          *
          * @throws sdbus::Error in case of failure
          */
-        MethodInvoker callMethod(const std::string& methodName);
+        [[nodiscard]] MethodInvoker callMethod(const std::string& methodName);
 
         /*!
          * @brief Calls method on the proxied D-Bus object asynchronously
@@ -218,7 +207,7 @@ namespace sdbus {
          *
          * @throws sdbus::Error in case of failure
          */
-        AsyncMethodInvoker callMethodAsync(const std::string& methodName);
+        [[nodiscard]] AsyncMethodInvoker callMethodAsync(const std::string& methodName);
 
         /*!
          * @brief Registers signal handler for a given signal of the proxied D-Bus object
@@ -238,7 +227,7 @@ namespace sdbus {
          *
          * @throws sdbus::Error in case of failure
          */
-        SignalSubscriber uponSignal(const std::string& signalName);
+        [[nodiscard]] SignalSubscriber uponSignal(const std::string& signalName);
 
         /*!
          * @brief Gets value of a property of the proxied D-Bus object
@@ -257,7 +246,7 @@ namespace sdbus {
          *
          * @throws sdbus::Error in case of failure
          */
-        PropertyGetter getProperty(const std::string& propertyName);
+        [[nodiscard]] PropertyGetter getProperty(const std::string& propertyName);
 
         /*!
          * @brief Sets value of a property of the proxied D-Bus object
@@ -276,7 +265,52 @@ namespace sdbus {
          *
          * @throws sdbus::Error in case of failure
          */
-        PropertySetter setProperty(const std::string& propertyName);
+        [[nodiscard]] PropertySetter setProperty(const std::string& propertyName);
+
+        /*!
+         * @brief Returns object path of the underlying DBus object
+         */
+        virtual const std::string& getObjectPath() const = 0;
+    };
+
+    /********************************************//**
+     * @class PendingAsyncCall
+     *
+     * PendingAsyncCall represents a simple handle type to cancel the delivery
+     * of the asynchronous D-Bus call result to the application.
+     *
+     * The handle is lifetime-independent from the originating Proxy object.
+     * It's safe to call its methods even after the Proxy has gone.
+     *
+     ***********************************************/
+    class PendingAsyncCall
+    {
+    public:
+        /*!
+         * @brief Cancels the delivery of the pending asynchronous call result
+         *
+         * This function effectively removes the callback handler registered to the
+         * async D-Bus method call result delivery. Does nothing if the call was
+         * completed already, or if the originating Proxy object has gone meanwhile.
+         */
+        void cancel();
+
+        /*!
+         * @brief Answers whether the asynchronous call is still pending
+         *
+         * @return True if the call is pending, false if the call has been fully completed
+         *
+         * Pending call in this context means a call whose results have not arrived, or
+         * have arrived and are currently being processed by the callback handler.
+         */
+        bool isPending() const;
+
+    private:
+        friend internal::Proxy;
+        PendingAsyncCall(std::weak_ptr<void> callData);
+
+    private:
+        std::weak_ptr<void> callData_;
     };
 
     // Out-of-line member definitions
@@ -289,10 +323,10 @@ namespace sdbus {
     }
 
     template <typename _Rep, typename _Period>
-    inline void IProxy::callMethod(const AsyncMethodCall& message, async_reply_handler asyncReplyCallback, const std::chrono::duration<_Rep, _Period>& timeout)
+    inline PendingAsyncCall IProxy::callMethod(const MethodCall& message, async_reply_handler asyncReplyCallback, const std::chrono::duration<_Rep, _Period>& timeout)
     {
         auto microsecs = std::chrono::duration_cast<std::chrono::microseconds>(timeout);
-        callMethod(message, std::move(asyncReplyCallback), microsecs.count());
+        return callMethod(message, std::move(asyncReplyCallback), microsecs.count());
     }
 
     inline MethodInvoker IProxy::callMethod(const std::string& methodName)
@@ -331,7 +365,7 @@ namespace sdbus {
      * The provided connection will be used by the proxy to issue calls against the object,
      * and signals, if any, will be subscribed to on this connection. The caller still
      * remains the owner of the connection (the proxy just keeps a reference to it), and
-     * should make sure that a processing loop is running on that connection, so the proxy
+     * should make sure that an I/O event loop is running on that connection, so the proxy
      * may receive incoming signals and asynchronous method replies.
      *
      * Code example:
@@ -339,9 +373,9 @@ namespace sdbus {
      * auto proxy = sdbus::createProxy(connection, "com.kistler.foo", "/com/kistler/foo");
      * @endcode
      */
-    std::unique_ptr<sdbus::IProxy> createProxy( sdbus::IConnection& connection
-                                              , std::string destination
-                                              , std::string objectPath );
+    [[nodiscard]] std::unique_ptr<sdbus::IProxy> createProxy( sdbus::IConnection& connection
+                                                            , std::string destination
+                                                            , std::string objectPath );
 
     /*!
      * @brief Creates a proxy object for a specific remote D-Bus object
@@ -362,9 +396,9 @@ namespace sdbus {
      * auto proxy = sdbus::createProxy(std::move(connection), "com.kistler.foo", "/com/kistler/foo");
      * @endcode
      */
-    std::unique_ptr<sdbus::IProxy> createProxy( std::unique_ptr<sdbus::IConnection>&& connection
-                                              , std::string destination
-                                              , std::string objectPath );
+    [[nodiscard]] std::unique_ptr<sdbus::IProxy> createProxy( std::unique_ptr<sdbus::IConnection>&& connection
+                                                            , std::string destination
+                                                            , std::string objectPath );
 
     /*!
      * @brief Creates a proxy object for a specific remote D-Bus object
@@ -383,8 +417,8 @@ namespace sdbus {
      * auto proxy = sdbus::createProxy("com.kistler.foo", "/com/kistler/foo");
      * @endcode
      */
-    std::unique_ptr<sdbus::IProxy> createProxy( std::string destination
-                                              , std::string objectPath );
+    [[nodiscard]] std::unique_ptr<sdbus::IProxy> createProxy( std::string destination
+                                                            , std::string objectPath );
 
 }
 

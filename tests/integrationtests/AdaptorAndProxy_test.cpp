@@ -24,89 +24,31 @@
  * along with sdbus-c++. If not, see <http://www.gnu.org/licenses/>.
  */
 
-// Own
-#include "TestingAdaptor.h"
-#include "TestingProxy.h"
-
-// sdbus
+#include "TestFixture.h"
+#include "TestAdaptor.h"
+#include "TestProxy.h"
 #include "sdbus-c++/sdbus-c++.h"
 
-// gmock
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
-
-// STL
 #include <string>
 #include <thread>
 #include <tuple>
 #include <chrono>
 #include <fstream>
 #include <future>
-
 #include <unistd.h>
 
 using ::testing::Eq;
 using ::testing::DoubleEq;
 using ::testing::Gt;
+using ::testing::AnyOf;
 using ::testing::ElementsAre;
 using ::testing::SizeIs;
 using namespace std::chrono_literals;
+using namespace sdbus::test;
 
-namespace
-{
-
-class AdaptorAndProxyFixture : public ::testing::Test
-{
-public:
-    static void SetUpTestCase()
-    {
-        s_connection->requestName(INTERFACE_NAME);
-        s_connection->enterProcessingLoopAsync();
-    }
-
-    static void TearDownTestCase()
-    {
-        s_connection->leaveProcessingLoop();
-        s_connection->releaseName(INTERFACE_NAME);
-    }
-
-    static bool waitUntil(std::atomic<bool>& flag, std::chrono::milliseconds timeout = 5s)
-    {
-        std::chrono::milliseconds elapsed{};
-        std::chrono::milliseconds step{5ms};
-        do {
-            std::this_thread::sleep_for(step);
-            elapsed += step;
-            if (elapsed > timeout)
-                return false;
-        } while (!flag);
-
-        return true;
-    }
-
-private:
-    void SetUp() override
-    {
-        m_adaptor = std::make_unique<TestingAdaptor>(*s_connection);
-        m_proxy = std::make_unique<TestingProxy>(INTERFACE_NAME, OBJECT_PATH);
-        std::this_thread::sleep_for(50ms); // Give time for the proxy to start listening to signals
-    }
-
-    void TearDown() override
-    {
-        m_proxy.reset();
-        m_adaptor.reset();
-    }
-
-public:
-    static std::unique_ptr<sdbus::IConnection> s_connection;
-
-    std::unique_ptr<TestingAdaptor> m_adaptor;
-    std::unique_ptr<TestingProxy> m_proxy;
-};
-
-std::unique_ptr<sdbus::IConnection> AdaptorAndProxyFixture::s_connection = sdbus::createSystemBusConnection();
-}
+using SdbusTestObject = TestFixture;
 
 /*-------------------------------------*/
 /* --          TEST CASES           -- */
@@ -117,15 +59,13 @@ TEST(AdaptorAndProxy, CanBeConstructedSuccesfully)
     auto connection = sdbus::createConnection();
     connection->requestName(INTERFACE_NAME);
 
-    ASSERT_NO_THROW(TestingAdaptor adaptor(*connection));
-    ASSERT_NO_THROW(TestingProxy proxy(INTERFACE_NAME, OBJECT_PATH));
+    ASSERT_NO_THROW(TestAdaptor adaptor(*connection));
+    ASSERT_NO_THROW(TestProxy proxy(INTERFACE_NAME, OBJECT_PATH));
 
     connection->releaseName(INTERFACE_NAME);
 }
 
 // Methods
-
-using SdbusTestObject = AdaptorAndProxyFixture;
 
 TEST_F(SdbusTestObject, CallsEmptyMethodSuccesfully)
 {
@@ -208,7 +148,7 @@ TEST_F(SdbusTestObject, CallsMethodWithSignatureSuccesfully)
 
 TEST_F(SdbusTestObject, CallsMethodWithObjectPathSuccesfully)
 {
-    auto resObjectPath = m_proxy->getObjectPath();
+    auto resObjectPath = m_proxy->getObjPath();
     ASSERT_THAT(resObjectPath, Eq(OBJECT_PATH_VALUE));
 }
 
@@ -247,8 +187,38 @@ TEST_F(SdbusTestObject, ThrowsTimeoutErrorWhenMethodTimesOut)
     }
     catch (const sdbus::Error& e)
     {
-        ASSERT_THAT(e.getName(), Eq("org.freedesktop.DBus.Error.Timeout"));
-        ASSERT_THAT(e.getMessage(), Eq("Connection timed out"));
+        ASSERT_THAT(e.getName(), AnyOf("org.freedesktop.DBus.Error.Timeout", "org.freedesktop.DBus.Error.NoReply"));
+        ASSERT_THAT(e.getMessage(), AnyOf("Connection timed out", "Method call timed out"));
+    }
+    catch(...)
+    {
+        FAIL() << "Expected sdbus::Error exception";
+    }
+}
+
+TEST_F(SdbusTestObject, ThrowsTimeoutErrorWhenClientSideAsyncMethodTimesOut)
+{
+    try
+    {
+        std::promise<uint32_t> promise;
+        auto future = promise.get_future();
+        m_proxy->installDoOperationClientSideAsyncReplyHandler([&](uint32_t res, const sdbus::Error* err)
+        {
+            if (err == nullptr)
+                promise.set_value(res);
+            else
+                promise.set_exception(std::make_exception_ptr(*err));
+        });
+
+        m_proxy->doOperationClientSideAsyncWith500msTimeout(1000); // The operation will take 1s, but the timeout is 500ms, so we should time out
+        future.get();
+
+        FAIL() << "Expected sdbus::Error exception";
+    }
+    catch (const sdbus::Error& e)
+    {
+        ASSERT_THAT(e.getName(), AnyOf("org.freedesktop.DBus.Error.Timeout", "org.freedesktop.DBus.Error.NoReply"));
+        ASSERT_THAT(e.getMessage(), AnyOf("Connection timed out", "Method call timed out"));
     }
     catch(...)
     {
@@ -290,7 +260,7 @@ TEST_F(SdbusTestObject, RunsServerSideAsynchoronousMethodAsynchronously)
     std::atomic<int> startedCount{};
     auto call = [&](uint32_t param)
     {
-        TestingProxy proxy{INTERFACE_NAME, OBJECT_PATH};
+        TestProxy proxy{INTERFACE_NAME, OBJECT_PATH};
         ++startedCount;
         while (!invoke) ;
         auto result = proxy.doOperationAsync(param);
@@ -313,7 +283,7 @@ TEST_F(SdbusTestObject, HandlesCorrectlyABulkOfParallelServerSideAsyncMethods)
     std::atomic<int> startedCount{};
     auto call = [&]()
     {
-        TestingProxy proxy{INTERFACE_NAME, OBJECT_PATH};
+        TestProxy proxy{INTERFACE_NAME, OBJECT_PATH};
         ++startedCount;
         while (!invoke) ;
 
@@ -353,6 +323,51 @@ TEST_F(SdbusTestObject, InvokesMethodAsynchronouslyOnClientSide)
     ASSERT_THAT(future.get(), Eq(100));
 }
 
+TEST_F(SdbusTestObject, AnswersThatAsyncCallIsPendingIfItIsInProgress)
+{
+    m_proxy->installDoOperationClientSideAsyncReplyHandler([&](uint32_t /*res*/, const sdbus::Error* /*err*/){});
+
+    auto call = m_proxy->doOperationClientSideAsync(100);
+
+    ASSERT_TRUE(call.isPending());
+}
+
+TEST_F(SdbusTestObject, CancelsPendingAsyncCallOnClientSide)
+{
+    std::promise<uint32_t> promise;
+    auto future = promise.get_future();
+    m_proxy->installDoOperationClientSideAsyncReplyHandler([&](uint32_t /*res*/, const sdbus::Error* /*err*/){ promise.set_value(1); });
+    auto call = m_proxy->doOperationClientSideAsync(100);
+
+    call.cancel();
+
+    ASSERT_THAT(future.wait_for(300ms), Eq(std::future_status::timeout));
+}
+
+TEST_F(SdbusTestObject, AnswersThatAsyncCallIsNotPendingAfterItHasBeenCancelled)
+{
+    std::promise<uint32_t> promise;
+    auto future = promise.get_future();
+    m_proxy->installDoOperationClientSideAsyncReplyHandler([&](uint32_t /*res*/, const sdbus::Error* /*err*/){ promise.set_value(1); });
+    auto call = m_proxy->doOperationClientSideAsync(100);
+
+    call.cancel();
+
+    ASSERT_FALSE(call.isPending());
+}
+
+TEST_F(SdbusTestObject, AnswersThatAsyncCallIsNotPendingAfterItHasBeenCompleted)
+{
+    std::promise<uint32_t> promise;
+    auto future = promise.get_future();
+    m_proxy->installDoOperationClientSideAsyncReplyHandler([&](uint32_t /*res*/, const sdbus::Error* /*err*/){ promise.set_value(1); });
+
+    auto call = m_proxy->doOperationClientSideAsync(0);
+    (void) future.get(); // Wait for the call to finish
+
+    ASSERT_TRUE(waitUntil([&call](){ return !call.isPending(); }));
+}
+
 TEST_F(SdbusTestObject, InvokesErroneousMethodAsynchronouslyOnClientSide)
 {
     std::promise<uint32_t> promise;
@@ -382,14 +397,22 @@ TEST_F(SdbusTestObject, FailsCallingMethodOnNonexistentInterface)
 
 TEST_F(SdbusTestObject, FailsCallingMethodOnNonexistentDestination)
 {
-    TestingProxy proxy("sdbuscpp.destination.that.does.not.exist", OBJECT_PATH);
+    TestProxy proxy("sdbuscpp.destination.that.does.not.exist", OBJECT_PATH);
     ASSERT_THROW(proxy.getInt(), sdbus::Error);
 }
 
 TEST_F(SdbusTestObject, FailsCallingMethodOnNonexistentObject)
 {
-    TestingProxy proxy(INTERFACE_NAME, "/sdbuscpp/path/that/does/not/exist");
+    TestProxy proxy(INTERFACE_NAME, "/sdbuscpp/path/that/does/not/exist");
     ASSERT_THROW(proxy.getInt(), sdbus::Error);
+}
+
+TEST_F(SdbusTestObject, CanReceiveSignalWhileMakingMethodCall)
+{
+    m_proxy->emitTwoSimpleSignals();
+
+    ASSERT_TRUE(waitUntil(m_proxy->m_gotSimpleSignal));
+    ASSERT_TRUE(waitUntil(m_proxy->m_gotSignalWithMap));
 }
 
 #if LIBSYSTEMD_VERSION>=240
@@ -413,6 +436,18 @@ TEST_F(SdbusTestObject, EmitsSimpleSignalSuccesfully)
     m_adaptor->emitSimpleSignal();
 
     ASSERT_TRUE(waitUntil(m_proxy->m_gotSimpleSignal));
+}
+
+TEST_F(SdbusTestObject, EmitsSimpleSignalToMultipleProxiesSuccesfully)
+{
+    auto proxy1 = std::make_unique<TestProxy>(*s_connection, INTERFACE_NAME, OBJECT_PATH);
+    auto proxy2 = std::make_unique<TestProxy>(*s_connection, INTERFACE_NAME, OBJECT_PATH);
+
+    m_adaptor->emitSimpleSignal();
+
+    ASSERT_TRUE(waitUntil(m_proxy->m_gotSimpleSignal));
+    ASSERT_TRUE(waitUntil(proxy1->m_gotSimpleSignal));
+    ASSERT_TRUE(waitUntil(proxy2->m_gotSimpleSignal));
 }
 
 TEST_F(SdbusTestObject, EmitsSignalWithMapSuccesfully)
@@ -450,7 +485,7 @@ TEST_F(SdbusTestObject, ReadsReadOnlyPropertySuccesfully)
 
 TEST_F(SdbusTestObject, FailsWritingToReadOnlyProperty)
 {
-    ASSERT_THROW(m_proxy->state("new_value"), sdbus::Error);
+    ASSERT_THROW(m_proxy->setStateProperty("new_value"), sdbus::Error);
 }
 
 TEST_F(SdbusTestObject, WritesAndReadsReadWritePropertySuccesfully)
@@ -582,7 +617,20 @@ TEST_F(SdbusTestObject, EmitsInterfacesAddedSignalForSelectedObjectInterfaces)
         EXPECT_THAT(objectPath, Eq(OBJECT_PATH));
         EXPECT_THAT(interfacesAndProperties, SizeIs(1));
         EXPECT_THAT(interfacesAndProperties.count(INTERFACE_NAME), Eq(1));
+#if LIBSYSTEMD_VERSION<=244
+        // Up to sd-bus v244, all properties are added to the list, i.e. `state', `action', and `blocking' in this case.
         EXPECT_THAT(interfacesAndProperties.at(INTERFACE_NAME), SizeIs(3));
+        EXPECT_TRUE(interfacesAndProperties.at(INTERFACE_NAME).count("state"));
+        EXPECT_TRUE(interfacesAndProperties.at(INTERFACE_NAME).count("action"));
+        EXPECT_TRUE(interfacesAndProperties.at(INTERFACE_NAME).count("blocking"));
+#else
+        // Since v245 sd-bus does not add to the InterfacesAdded signal message the values of properties marked only
+        // for invalidation on change, which makes the behavior consistent with the PropertiesChangedSignal.
+        // So in this specific instance, `action' property is no more added to the list.
+        EXPECT_THAT(interfacesAndProperties.at(INTERFACE_NAME), SizeIs(2));
+        EXPECT_TRUE(interfacesAndProperties.at(INTERFACE_NAME).count("state"));
+        EXPECT_TRUE(interfacesAndProperties.at(INTERFACE_NAME).count("blocking"));
+#endif
         signalReceived = true;
     };
 
@@ -599,7 +647,20 @@ TEST_F(SdbusTestObject, EmitsInterfacesAddedSignalForAllObjectInterfaces)
     {
         EXPECT_THAT(objectPath, Eq(OBJECT_PATH));
         EXPECT_THAT(interfacesAndProperties, SizeIs(5)); // INTERFACE_NAME + 4 standard interfaces
-        EXPECT_THAT(interfacesAndProperties.at(INTERFACE_NAME), SizeIs(3)); // 3 properties under INTERFACE_NAME
+#if LIBSYSTEMD_VERSION<=244
+        // Up to sd-bus v244, all properties are added to the list, i.e. `state', `action', and `blocking' in this case.
+        EXPECT_THAT(interfacesAndProperties.at(INTERFACE_NAME), SizeIs(3));
+        EXPECT_TRUE(interfacesAndProperties.at(INTERFACE_NAME).count("state"));
+        EXPECT_TRUE(interfacesAndProperties.at(INTERFACE_NAME).count("action"));
+        EXPECT_TRUE(interfacesAndProperties.at(INTERFACE_NAME).count("blocking"));
+#else
+        // Since v245 sd-bus does not add to the InterfacesAdded signal message the values of properties marked only
+        // for invalidation on change, which makes the behavior consistent with the PropertiesChangedSignal.
+        // So in this specific instance, `action' property is no more added to the list.
+        EXPECT_THAT(interfacesAndProperties.at(INTERFACE_NAME), SizeIs(2));
+        EXPECT_TRUE(interfacesAndProperties.at(INTERFACE_NAME).count("state"));
+        EXPECT_TRUE(interfacesAndProperties.at(INTERFACE_NAME).count("blocking"));
+#endif
         signalReceived = true;
     };
 

@@ -26,7 +26,7 @@ Introduction
 
 sdbus-c++ is a C++ D-Bus library built on top of [sd-bus](http://0pointer.net/blog/the-new-sd-bus-api-of-systemd.html), a lightweight D-Bus client library implemented within [systemd](https://github.com/systemd/systemd) project. It provides D-Bus functionality on a higher level of abstraction, trying to employ C++ type system to shift as much work as possible from the developer to the compiler.
 
-sdbus-c++ does not cover the entire sd-bus API, but provides tools for implementing the most common functionality - RPC method calls, signals and properties. There is room for additions and improvements, as needed and when needed.
+Although sdbus-c++ covers most of sd-bus API, it does not (yet) fully cover every sd-bus API detail. The focus is put on the most widely used functionality: D-Bus connections, object, proxies, synchronous and asynchronous method calls, signals, and properties. If you are missing a desired functionality, you are welcome to submit an issue, or, best, to contribute to sdbus-c++ by submitting a pull request.
 
 Integrating sdbus-c++ into your project
 ---------------------------------------
@@ -51,7 +51,7 @@ PKG_CHECK_MODULES(SDBUSCPP, [sdbus-c++ >= 0.6],,
 )
 ```
 
-Note: sdbus-c++ library depends on C++17, since it uses C++17 `std::uncaught_exceptions()` feature. When building sdbus-c++ manually, make sure you use a compiler that supports that feature. To use the library, make sure you have a C++ standard library that supports the feature. The feature is supported by e.g. gcc >= 6, and clang >= 3.7.
+Note: sdbus-c++ library uses a number of modern C++17 features. Please make certain you have a recent compiler (gcc >= 7, clang >= 6).
 
 Solving libsystemd dependency
 -----------------------------
@@ -89,24 +89,16 @@ You may additionally set the `LIBSYSTEMD_VERSION` configuration flag to fine-tun
 Distributing sdbus-c++
 ----------------------
 
-sdbus-c++ recipes for Yocto are available. Contributors willing to help with bringing sdbus-c++ to popular package systems are welcome.
-
 ### Yocto
 
-There are sdbus-c++ recipes for already released Yocto versions (for versions Sumo and newer) available in the meta-oe layer of meta-openembedded fork at Kistler-Group:
+There are Yocto recipes for sdbus-c++ available in the [`meta-oe`](https://github.com/openembedded/meta-openembedded/tree/master/meta-oe/recipes-core/sdbus-c%2B%2B) layer of the `meta-openembedded` project. There are two recipes:
 
-  * [sdbus-c++ recipes for Yocto Sumo](https://github.com/Kistler-Group/meta-openembedded/tree/sumo-with-sdbus-c%2B%2B/meta-oe/recipes-core/sdbus-c%2B%2B)
-  * [sdbus-c++ recipes for Yocto Thud](https://github.com/Kistler-Group/meta-openembedded/tree/thud-with-sdbus-c%2B%2B/meta-oe/recipes-core/sdbus-c%2B%2B)
-  * [sdbus-c++ recipes for Yocto Warrior](https://github.com/Kistler-Group/meta-openembedded/tree/warrior-with-sdbus-c%2B%2B/meta-oe/recipes-core/sdbus-c%2B%2B)
-
-Also, there is currently a pull request pending that pushes there recipes upstream -- to the OpenEmbedded project, so they will be officially available for the upcoming Yocto release.
-
-There are two recipes:
-
-  * One for sdbus-c++ itself. It detects whether systemd feature is turned on in the poky linux configuration. If so, it simply depends on systemd and makes use of libsystemd shared library available in the target system. Otherwise it automatically downloads and builds libsystemd static library and makes it an opaque part of sdbus-c++ shared library. The recipe also supports ptest.
+  * One for sdbus-c++ itself. It detects whether systemd feature is turned on in the poky linux configuration. If so, it simply depends on systemd and makes use of libsystemd shared library available in the target system. Otherwise it automatically downloads and builds libsystemd static library and links it into the sdbus-c++ shared library. The recipe also supports ptest.
   * One for sdbus-c++ native tools, namely sdbus-c++ code generator to generate C++ adaptor and proxy binding classes.
 
 Tip: If you get `ERROR: Program or command 'getent' not found or not executable` when building sdbus-c++ in Yocto, please make sure you've added `getent` to `HOSTTOOLS`. For example, you can add `HOSTTOOLS_NONFATAL += "getent"` into your local.conf file.
+
+Contributors willing to help with bringing sdbus-c++ to other popular package systems are welcome.
 
 Header files and namespaces
 ---------------------------
@@ -143,7 +135,7 @@ The following diagram illustrates the major entities in sdbus-c++.
 
 ![class](sdbus-c++-class-diagram.png)
 
-`IConnection` represents the concept of a D-Bus connection. You can connect to either the system bus or a session bus. Services can assign unique service names to those connections. A processing loop should be run on the connection.
+`IConnection` represents the concept of a D-Bus connection. You can connect to either the system bus or a session bus. Services can assign unique service names to those connections. An I/O event loop should be run on the bus connection.
 
 `IObject` represents the concept of an object that exposes its methods, signals and properties. Its responsibilities are:
 
@@ -157,8 +149,7 @@ The following diagram illustrates the major entities in sdbus-c++.
 
 `Message` class represents a message, which is the fundamental DBus concept. There are three distinctive types of message that are derived from the `Message` class:
 
-  * `MethodCall` (with serialized parameters),
-  * `AsyncMethodCall` (with serialized parameters),
+  * `MethodCall` (be it synchronous or asynchronous method call, with serialized parameters),
   * `MethodReply` (with serialized return values),
   * `Signal` (with serialized parameters),
   * `PropertySetCall` (with serialized parameter value to be set)
@@ -167,12 +158,16 @@ The following diagram illustrates the major entities in sdbus-c++.
 
 ### Thread safety in sdbus-c++
 
-sdbus-c++ is thread-aware by design. But, in general, it's not thread-safe. At least not in all places. There are situations where sdbus-c++ provides and guarantees API-level thread safety by design. It is safe to do these operations from multiple threads at the same time:
+sdbus-c++ is completely thread-aware by design. Though sdbus-c++ is not thread-safe in general, there are situations where sdbus-c++ provides and guarantees API-level thread safety by design. It is safe to do these operations (operations within the bullet points, not across them) from multiple threads at the same time:
 
-  * Making and destroying `Object`s and `Proxy`s, even on a shared connection that is already running an event loop. Under *making* here is meant a complete atomic sequence of construction, registration of method/signal/property callbacks and export of the `Object`/`Proxy` so it is ready to issue/receive messages. This sequence must be done in one thread.
+  * Making or destroying distinct `Object`/`Proxy` instances simultaneously (even on a shared connection that is running an event loop already, see below). Under *making* here is meant a complete sequence of construction, registration of method/signal/property callbacks and export of the `Object`/`Proxy` so it is ready to issue/receive messages. This sequence must be completely done within the context of one thread.
   * Creating and sending asynchronous method replies on an `Object` instance.
   * Creating and emitting signals on an `Object` instance.
   * Creating and sending method calls (both synchronously and asynchronously) on an `Proxy` instance. (But it's generally better that our threads use their own exclusive instances of proxy, to minimize shared state and contention.)
+
+sdbus-c++ is designed such that all the above operations are thread-safe also on a connection that is running an event loop (usually in a separate thread) at that time. It's an internal thread safety. For example, a signal arrives and is processed by sdbus-c++ even loop at an appropriate `Proxy` instance, while the user is going to destroy that instance in their application thread. The user cannot explicitly control these situations (or they could, but that would be very limiting and cubersome on the API level).
+
+However, other combinations, that the user invokes explicitly from within more threads are NOT thread-safe in sdbus-c++ by design, and the user should make sure by their design that these cases never occur. For example, destroying an `Object` instance in one thread while emitting a signal on it in another thread is not thread-safe. In this specific case, the user should make sure in their application that all threads stop working with a specific instance before a thread proceeds with deleting that instance.
 
 Multiple layers of sdbus-c++ API
 -------------------------------
@@ -267,8 +262,8 @@ int main(int argc, char *argv[])
     concatenator->registerSignal(interfaceName, "concatenated", "s");
     concatenator->finishRegistration();
 
-    // Run the loop on the connection.
-    connection->enterProcessingLoop();
+    // Run the I/O event loop on the bus connection.
+    connection->enterEventLoop();
 }
 ```
 
@@ -358,27 +353,41 @@ The design of D-Bus connections in sdbus-c++ allows for certain flexibility and 
 
 How shall we use connections in relation to D-Bus objects and object proxies?
 
-A D-Bus connection is represented by a `IConnection` instance. Each connection needs an event loop being run upon it. So it needs a thread handling the event loop. This thread serves all incoming and outgoing messages and all communication towards D-Bus daemon.
+A D-Bus connection is represented by a `IConnection` instance. Each connection needs an event loop being run upon it. So it needs a thread handling the event loop. This thread serves all incoming and outgoing messages and all communication towards D-Bus daemon. One process can have one but also multiple D-Bus connections (we just have to make certain that the connections with assigned bus names don't share a common name; the name must be unique).
 
-One process can have multiple D-Bus connections, with assigned unique bus names or without, as long as those with assigned bus names do not share a common bus name.
+A typical use case for most services is **one** D-Bus connection in the application. The application runs event loop on that connection. When creating objects or proxies, the application provides reference of that connection to those objects and proxies. This means all these objects and proxies share the same connection. This is nicely scalable, because with whatever number of objects or proxies, there is only one connection and one event loop thread. Yet, services that provide objects at various bus names have to create and maintain multiple D-Bus connections, each with the unique bus name.
 
-A D-Bus connection can be created for and used exclusively by one D-Bus object (represented by one `IObject` instance) or one D-Bus proxy (represented by one `IProxy` instance), but can very well be used by and shared across multiple objects, multiple proxies or even both multiple objects and proxies at the same time. When shared, one must bear in mind that the access to the connection is mutually exclusive and is serialized. This means, for example, that if an object's callback is going to be invoked for an incoming remote method call and in another thread we use a proxy to call remote method in another process, the threads are contending and only one can go on while the other must wait and can only proceed after the first one has finished, because both are using a shared resource -- the connection.
+The connection is thread-safe and objects and proxies can invoke operations on it from multiple threads simultaneously, but the operations are serialized. This means, for example, that if an object's callback for an incoming remote method call is going to be invoked in an event loop thread, and in another thread we use a proxy to call remote method in another process, the threads are contending and only one can go on while the other must wait and can only proceed after the first one has finished, because both are using a shared resource -- the connection.
 
-The former case (1:1) is one extreme; it's usually simple, has zero resource contention, but hurts scalability (for example, 50 proxies in our program need 50 D-Bus connections and 50 event loop threads upon them). The latter case (1:N) is the other extreme -- all D-Bus objects and proxies share one single connection. This is the most scalable solution (since, for example, 5 or 200 objects/proxies use always one single connection), but may increase contention and hurt concurrency (since only one of all those objects/proxies can work with the connection at a time). And then there are limitless options between the two (for example, we can use one connection for all objects, and another connection for all proxies in our service...). sdbus-c++ gives its users freedom to choose whatever approach is more suitable to them in their application at fine granularity.
+We should bear that in mind when designing more complex, multi-threaded services with high parallelism. If we have undesired contention on a connection, creating a specific, dedicated connection for a hot spot helps to increase concurrency. sdbus-c++ provides us freedom to create as many connections as we want and assign objects and proxies to those connections at our will. We, as application developers, choose whatever approach is more suitable to us at quite a fine granularity.
 
-How can we use connections from the server and the client perspective?
+So, more technically, how can we use connections from the server and the client perspective?
 
-* On the *server* side, we generally need to create D-Bus objects and publish their APIs. For that we first need a connection with a unique bus name. We need to create the D-Bus connection manually ourselves, request bus name on it, and manually launch its event loop (in a blocking way, through `enterProcessingLoop()`, or non-blocking async way, through `enterProcessingLoopAsync()`). At any time before or after running the event loop on the connection, we can create and "hook", as well as remove, objects and proxies upon that connection.
+#### Using D-Bus connections on the server side
 
-* On the *client* side, for our D-Bus object proxies, we have more options (corresponding to three overloads of the `createProxy()` factory):
+On the **server** side, we generally need to create D-Bus objects and publish their APIs. For that we first need a connection with a unique bus name. We need to create the D-Bus connection manually ourselves, request bus name on it, and manually launch its event loop:
 
-    * We don't bother about any connection when creating a proxy. For each proxy instance sdbus-c++ also creates an internal connection instance to be used just by this proxy, and it will be a *system bus* connection. Additionally, an event loop thread for that connection is created and run internally.
+  * either in a blocking way, through `enterEventLoop()`,
+  * or in a non-blocking async way, through `enterEventLoopAsync()`,
+  * or, when we have our own implementation of an event loop (e.g. we are using sd-event event loop), we can ask the connection for its underlying fd, I/O events and timeouts through `getEventLoopPollData()` and use that data in our event loop mechanism.
 
-      This hurts scalability (see discussion above), but our code is simpler, and since each proxy has its own connection, there is zero contention.
+Of course, at any time before or after running the event loop on the connection, we can create and "hook", as well as remove, objects and proxies upon that connection.
 
-    * We create a connection explicitly by ourselves and `std::move` it to the proxy object factory. The proxy becomes an owner of this connection, and will run the event loop on that connection. This is the same as in the above bullet point, but with a flexibility that we can choose the bus type (system, session bus).
+#### Using D-Bus connections on the client side
 
-    * We are always full owners of the connection. We create the connection, and a proxy only takes and keeps a reference to it. We take care of the event loop upon that connection (and we must ensure the connection exists as long as all its users exist).
+On the **client** side we have more options when creating D-Bus proxies. That corresponds to three overloads of the `createProxy()` factory:
+
+  * In case we (the application) already maintain a D-Bus connection, e.g. because we a D-Bus service anyway, the simple and typical approach is to create proxy upon that connection. The proxy will share the connection with others. So we pass connection reference to proxy factory. With this approach we must of course ensure that the connection exists as long as the proxy exists.
+  
+  * Or -- and this is typical when we have a simple D-Bus client application -- we have another option: we let proxy maintain its own connection (and an associated thread):
+  
+    * We either create the connection ourselves and `std::move` it to the proxy object factory. The proxy becomes an owner of this connection, and will run the event loop on that connection. This had the advantage that we may choose the type of connection (system, session, remote).
+
+    * Or we don't bother about any connection at all when creating a proxy (the factory overload with no connection parameter). Under the hood, the proxy creates its own *system bus* connection, creates a separate thread and runs an event loop in it. This is **the simplest approach** for non-complex D-Bus clients. For more complex ones, with big number of proxies, this hurts scalability but may improve concurrency (see discussion higher above), so we should make a conscious choice.
+
+#### Stopping I/O event loops graciously
+
+A connection with an asynchronous event loop (i.e. one initiated through `enterEventLoopAsync()`) will stop and join its event loop thread automatically in its destructor. An event loop that blocks in the synchronous `enterEventLoop()` call can be unblocked through `leaveEventLoop()` call on the respective bus connection issued from a different thread or from an OS signal handler.
 
 Implementing the Concatenator example using convenience sdbus-c++ API layer
 ---------------------------------------------------------------------------
@@ -390,11 +399,11 @@ The convenience API layer abstracts the concept of underlying D-Bus messages awa
 Thus, in the end of the day, the code written using the convenience API is:
 
   - more expressive,
-  - closer to the abstraction level of the problem being solved,
-  - shorter,
+  - at a higher level of abstraction (closer to the abstraction level of the problem being solved),
+  - significantly shorter,
   - almost as fast as one written using the basic API layer.
 
-The code written using this layer expresses *what* it does, rather then *how*. Let's look at code samples.
+The code written using this layer expresses in a declarative way *what* it does, rather then *how*. Let's look at code samples.
 
 ### Server side
 
@@ -446,7 +455,7 @@ int main(int argc, char *argv[])
     concatenator->finishRegistration();
 
     // Run the loop on the connection.
-    connection->enterProcessingLoop();
+    connection->enterEventLoop();
 }
 ```
 
@@ -510,10 +519,17 @@ When registering methods, calling methods or emitting signals, multiple lines of
 
 sdbus-c++ users shall prefer the convenience API to the lower level, basic API. When feasible, using generated adaptor and proxy stubs is even better. These stubs provide yet another, higher API level built on top of the convenience API. They are described in the following section.
 
+Tip: When registering a D-Bus object, we can additionally provide names of input and output parameters of its methods and names of parameters of its signals. When the object is introspected, these names are listed in the resulting introspection XML, which improves the description of object's interfaces:
+
+```c++
+    concatenator->registerMethod("concatenate").onInterface(interfaceName).withInputParamNames("numbers", "separator").withOutputParamNames("concatenatedString").implementedAs(&concatenate);
+    concatenator->registerSignal("concatenated").onInterface(interfaceName).withParameters<std::string>("concatenatedString");
+```
+
 Implementing the Concatenator example using sdbus-c++-generated stubs
 ---------------------------------------------------------------------
 
-sdbus-c++ ships with the native stub generator tool called `sdbus-c++-xml2cpp`. The tool is very similar to `dbusxx-xml2cpp` tool that comes with the dbus-c++ project.
+sdbus-c++ ships with the native stub generator tool called `sdbus-c++-xml2cpp`. The tool is very similar to `dbusxx-xml2cpp` tool that comes with the dbus-c++ library.
 
 The generator tool takes D-Bus XML IDL description of D-Bus interfaces on its input, and can be instructed to generate one or both of these: an adaptor header file for use on the server side, and a proxy header file for use on the client side. Like this:
 
@@ -574,8 +590,8 @@ protected:
     Concatenator_adaptor(sdbus::IObject& object)
         : object_(object)
     {
-        object_.registerMethod("concatenate").onInterface(INTERFACE_NAME).implementedAs([this](const std::vector<int32_t>& numbers, const std::string& separator){ return this->concatenate(numbers, separator); });
-        object_.registerSignal("concatenated").onInterface(INTERFACE_NAME).withParameters<std::string>();
+        object_.registerMethod("concatenate").onInterface(INTERFACE_NAME).withInputParamNames("numbers", "separator").withOutputParamNames("concatenatedString").implementedAs([this](const std::vector<int32_t>& numbers, const std::string& separator){ return this->concatenate(numbers, separator); });
+        object_.registerSignal("concatenated").onInterface(INTERFACE_NAME).withParameters<std::string>("concatenatedString");
     }
 
     ~Concatenator_adaptor() = default;
@@ -721,7 +737,7 @@ int main(int argc, char *argv[])
     Concatenator concatenator(*connection, objectPath);
 
     // Run the loop on the connection.
-    connection->enterProcessingLoop();
+    connection->enterEventLoop();
 }
 ```
 
@@ -1055,7 +1071,7 @@ Using D-Bus properties
 
 Defining and working with D-Bus properties using XML description is quite easy.
 
-### Defining a property in the XML
+### Defining a property in the IDL
 
 A property element has no arg child element. It just has the attributes name, type and access, which are all mandatory. The access attribute allows the values ‘readwrite’, ‘read’, and ‘write’.
 

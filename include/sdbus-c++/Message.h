@@ -44,7 +44,7 @@ namespace sdbus {
     class ObjectPath;
     class Signature;
     template <typename... _ValueTypes> class Struct;
-    struct UnixFd;
+    class UnixFd;
     class MethodReply;
     namespace internal {
         class ISdBus;
@@ -55,11 +55,7 @@ namespace sdbus {
 
     // Assume the caller has already obtained message ownership
     struct adopt_message_t { explicit adopt_message_t() = default; };
-#ifdef __cpp_inline_variables
     inline constexpr adopt_message_t adopt_message{};
-#else
-    constexpr adopt_message_t adopt_message{};
-#endif
 
     /********************************************//**
      * @class Message
@@ -75,7 +71,7 @@ namespace sdbus {
      * of @c IObject and @c IProxy.
      *
      ***********************************************/
-    class Message
+    class [[nodiscard]] Message
     {
     public:
         Message& operator<<(bool item);
@@ -165,25 +161,10 @@ namespace sdbus {
         mutable bool ok_{true};
     };
 
+    struct dont_request_slot_t { explicit dont_request_slot_t() = default; };
+    inline constexpr dont_request_slot_t dont_request_slot{};
+
     class MethodCall : public Message
-    {
-        using Message::Message;
-        friend Factory;
-
-    public:
-        MethodCall() = default;
-        MethodReply send(uint64_t timeout = 0) const;
-        MethodReply createReply() const;
-        MethodReply createErrorReply(const sdbus::Error& error) const;
-        void dontExpectReply();
-        bool doesntExpectReply() const;
-
-    private:
-        MethodReply sendWithReply(uint64_t timeout) const;
-        MethodReply sendWithNoReply() const;
-    };
-
-    class AsyncMethodCall : public Message
     {
         using Message::Message;
         friend Factory;
@@ -191,9 +172,21 @@ namespace sdbus {
     public:
         using Slot = std::unique_ptr<void, std::function<void(void*)>>;
 
-        AsyncMethodCall() = default;
-        explicit AsyncMethodCall(MethodCall&& call) noexcept;
-        Slot send(void* callback, void* userData, uint64_t timeout = 0) const;
+        MethodCall() = default;
+
+        MethodReply send(uint64_t timeout) const;
+        void send(void* callback, void* userData, uint64_t timeout, dont_request_slot_t) const;
+        [[nodiscard]] Slot send(void* callback, void* userData, uint64_t timeout) const;
+
+        MethodReply createReply() const;
+        MethodReply createErrorReply(const sdbus::Error& error) const;
+
+        void dontExpectReply();
+        bool doesntExpectReply() const;
+
+    private:
+        MethodReply sendWithReply(uint64_t timeout = 0) const;
+        MethodReply sendWithNoReply() const;
     };
 
     class MethodReply : public Message
@@ -282,10 +275,7 @@ namespace sdbus {
         template <typename... _Args>
         void serialize_pack(Message& msg, _Args&&... args)
         {
-            // Use initializer_list because it guarantees left to right order, and can be empty
-            using _ = std::initializer_list<int>;
-            // We are not interested in the list itself, but in the side effects
-            (void)_{(void(msg << std::forward<_Args>(args)), 0)...};
+            (void)(msg << ... << args);
         }
 
         template <class _Tuple, std::size_t... _Is>
@@ -377,10 +367,7 @@ namespace sdbus {
         template <typename... _Args>
         void deserialize_pack(Message& msg, _Args&... args)
         {
-            // Use initializer_list because it guarantees left to right order, and can be empty
-            using _ = std::initializer_list<int>;
-            // We are not interested in the list itself, but in the side effects
-            (void)_{(void(msg >> args), 0)...};
+            (void)(msg >> ... >> args);
         }
 
         template <class _Tuple, std::size_t... _Is>

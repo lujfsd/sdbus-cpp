@@ -31,7 +31,7 @@
 #include "ISdBus.h"
 #include <mutex>
 
-namespace sdbus { namespace internal {
+namespace sdbus::internal {
 
 class SdBus final : public ISdBus
 {
@@ -43,6 +43,7 @@ public:
     virtual int sd_bus_call(sd_bus *bus, sd_bus_message *m, uint64_t usec, sd_bus_error *ret_error, sd_bus_message **reply) override;
     virtual int sd_bus_call_async(sd_bus *bus, sd_bus_slot **slot, sd_bus_message *m, sd_bus_message_handler_t callback, void *userdata, uint64_t usec) override;
 
+    virtual int sd_bus_message_new(sd_bus *bus, sd_bus_message **m, uint8_t type) override;
     virtual int sd_bus_message_new_method_call(sd_bus *bus, sd_bus_message **m, const char *destination, const char *path, const char *interface, const char *member) override;
     virtual int sd_bus_message_new_signal(sd_bus *bus, sd_bus_message **m, const char *path, const char *interface, const char *member) override;
     virtual int sd_bus_message_new_method_return(sd_bus_message *call, sd_bus_message **m) override;
@@ -78,6 +79,6 @@ private:
     std::recursive_mutex sdbusMutex_;
 };
 
-}}
+}
 
 #endif //SDBUS_C_SDBUS_H

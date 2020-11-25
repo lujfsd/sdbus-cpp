@@ -37,10 +37,12 @@
 #include <thread>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <mutex>
 
-namespace sdbus { namespace internal {
+namespace sdbus::internal {
 
-    class Connection
+    class Connection final
         : public sdbus::IConnection           // External, public interface
         , public sdbus::internal::IConnection // Internal, private interface
     {
@@ -58,10 +60,10 @@ namespace sdbus { namespace internal {
         void requestName(const std::string& name) override;
         void releaseName(const std::string& name) override;
         std::string getUniqueName() const override;
-        void enterProcessingLoop() override;
-        void enterProcessingLoopAsync() override;
-        void leaveProcessingLoop() override;
-        sdbus::IConnection::PollData getProcessLoopPollData() const override;
+        void enterEventLoop() override;
+        void enterEventLoopAsync() override;
+        void leaveEventLoop() override;
+        PollData getEventLoopPollData() const override;
         bool processPendingRequest() override;
 
         void addObjectManager(const std::string& objectPath) override;
@@ -78,11 +80,11 @@ namespace sdbus { namespace internal {
                                , const sd_bus_vtable* vtable
                                , void* userData ) override;
 
+        PlainMessage createPlainMessage() const override;
         MethodCall createMethodCall( const std::string& destination
                                    , const std::string& objectPath
                                    , const std::string& interfaceName
                                    , const std::string& methodName ) const override;
-
         Signal createSignal( const std::string& objectPath
                            , const std::string& interfaceName
                            , const std::string& signalName ) const override;
@@ -103,6 +105,8 @@ namespace sdbus { namespace internal {
                                      , sd_bus_message_handler_t callback
                                      , void* userData ) override;
 
+        MethodReply tryCallMethodSynchronously(const MethodCall& message, uint64_t timeout) override;
+
     private:
         using BusFactory = std::function<int(sd_bus**)>;
         using BusPtr = std::unique_ptr<sd_bus, std::function<sd_bus*(sd_bus*)>>;
@@ -114,9 +118,9 @@ namespace sdbus { namespace internal {
         static std::string composeSignalMatchFilter( const std::string& objectPath
                                                    , const std::string& interfaceName
                                                    , const std::string& signalName );
-        void notifyProcessingLoopToExit();
+        void notifyEventLoopToExit();
         void clearExitNotification();
-        void joinWithProcessingLoop();
+        void joinWithEventLoop();
         static std::vector</*const */char*> to_strv(const std::vector<std::string>& strings);
 
         struct LoopExitEventFd
@@ -130,9 +134,11 @@ namespace sdbus { namespace internal {
         std::unique_ptr<ISdBus> iface_;
         BusPtr bus_;
         std::thread asyncLoopThread_;
+        std::atomic<std::thread::id> loopThreadId_;
+        std::mutex loopMutex_;
         LoopExitEventFd loopExitFd_;
     };
 
-}}
+}
 
 #endif /* SDBUS_CXX_INTERNAL_CONNECTION_H_ */

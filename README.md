@@ -1,6 +1,10 @@
 sdbus-c++
 =========
 
+![ci](https://github.com/Kistler-Group/sdbus-cpp/workflows/CI/badge.svg)
+![license](https://img.shields.io/github/license/Kistler-Group/sdbus-cpp)
+![release](https://img.shields.io/github/v/release/Kistler-Group/sdbus-cpp)
+
 sdbus-c++ is a high-level C++ D-Bus library for Linux designed to provide expressive, easy-to-use API in modern C++. It adds another layer of abstraction on top of sd-bus, a nice, fresh C D-Bus implementation by systemd.
 
 sdbus-c++ has been written primarily as a replacement of dbus-c++, which currently suffers from a number of (unresolved) bugs, concurrency issues and inherent design complexities and limitations. sdbus-c++ has learned from dbus-c++ and has chosen a different path, a path of simple yet powerful design that is intuitive and friendly to the user and inherently free of those bugs.
@@ -38,11 +42,11 @@ $ sudo make install
 
   Option for building sdbus-c++ unit and integration tests, invokable by `make test`. That incorporates downloading and building static libraries of Google Test. Default value: `OFF`. Use `-DBUILD_TESTS=ON` to enable building the tests. With this option turned on, you may also enable/disable the following options:
 
-    * `BUILD_PERF_TESTS` [boolean]
+    * `ENABLE_PERF_TESTS` [boolean]
 
       Option for building sdbus-c++ performance tests. Default value: `OFF`.
 
-    * `BUILD_STRESS_TESTS` [boolean]
+    * `ENABLE_STRESS_TESTS` [boolean]
 
       Option for building sdbus-c++ stress tests. Default value: `OFF`.
 
@@ -65,7 +69,7 @@ $ sudo make install
 Dependencies
 ------------
 
-* `C++17` - the library uses C++17 `std::uncaught_exceptions()` feature. When building sdbus-c++ manually, make sure you use a compiler that supports that feature (gcc >= 6, clang >= 3.7)
+* `C++17` - the library uses C++17 features.
 * `libsystemd` - systemd library containing sd-bus implementation. This library is part of systemd. Systemd at least v236 is needed. (In case you have a non-systemd environment, don't worry, see [Solving libsystemd dependency](docs/using-sdbus-c++.md#solving-libsystemd-dependency) for more information.)
 * `googletest` - google unit testing framework, only necessary when building tests, will be downloaded and built automatically.
 * `pkgconfig` - required for sdbus-c++ to be able to find some dependency packages.
@@ -73,7 +77,7 @@ Dependencies
 Licensing
 ---------
 
-The library is distributed under LGPLv2.1 license.
+The library is distributed under LGPLv2.1 license, with a specific exception for macro/template/inline code in library header files.
 
 References/documentation
 ------------------------

@@ -36,16 +36,15 @@
 // Forward declaration
 namespace sdbus {
     class MethodCall;
-    class AsyncMethodCall;
     class MethodReply;
     class Signal;
+    class PlainMessage;
     namespace internal {
         class ISdBus;
     }
 }
 
-namespace sdbus {
-namespace internal {
+namespace sdbus::internal {
 
     using SlotPtr = std::unique_ptr<void, std::function<void(void*)>>;
 
@@ -57,16 +56,16 @@ namespace internal {
         virtual const ISdBus& getSdBusInterface() const = 0;
         virtual ISdBus& getSdBusInterface() = 0;
 
-        virtual SlotPtr addObjectVTable( const std::string& objectPath
-                                       , const std::string& interfaceName
-                                       , const sd_bus_vtable* vtable
-                                       , void* userData ) = 0;
+        [[nodiscard]] virtual SlotPtr addObjectVTable( const std::string& objectPath
+                                                     , const std::string& interfaceName
+                                                     , const sd_bus_vtable* vtable
+                                                     , void* userData ) = 0;
 
+        virtual PlainMessage createPlainMessage() const = 0;
         virtual MethodCall createMethodCall( const std::string& destination
                                            , const std::string& objectPath
                                            , const std::string& interfaceName
                                            , const std::string& methodName ) const = 0;
-
         virtual Signal createSignal( const std::string& objectPath
                                    , const std::string& interfaceName
                                    , const std::string& signalName ) const = 0;
@@ -81,19 +80,22 @@ namespace internal {
         virtual void emitInterfacesRemovedSignal( const std::string& objectPath
                                                 , const std::vector<std::string>& interfaces ) = 0;
 
-        virtual SlotPtr addObjectManager(const std::string& objectPath, void* /*dummy*/ = nullptr) = 0;
+        [[nodiscard]] virtual SlotPtr addObjectManager(const std::string& objectPath, void* /*dummy*/ = nullptr) = 0;
 
-        virtual SlotPtr registerSignalHandler( const std::string& objectPath
-                                             , const std::string& interfaceName
-                                             , const std::string& signalName
-                                             , sd_bus_message_handler_t callback
-                                             , void* userData ) = 0;
+        [[nodiscard]] virtual SlotPtr registerSignalHandler( const std::string& objectPath
+                                                           , const std::string& interfaceName
+                                                           , const std::string& signalName
+                                                           , sd_bus_message_handler_t callback
+                                                           , void* userData ) = 0;
 
-        virtual void enterProcessingLoopAsync() = 0;
-        virtual void leaveProcessingLoop() = 0;
+        virtual void enterEventLoopAsync() = 0;
+        virtual void leaveEventLoop() = 0;
+
+        virtual MethodReply tryCallMethodSynchronously(const MethodCall& message, uint64_t timeout) = 0;
     };
 
-}
+    [[nodiscard]] std::unique_ptr<sdbus::internal::IConnection> createConnection();
+
 }
 
 #endif /* SDBUS_CXX_INTERNAL_ICONNECTION_H_ */
